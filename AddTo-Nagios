@@ -1,53 +1,38 @@
+$ErrorActionPreference = 'Stop'
+
 $computerName = Read-Host "Enter Hostname"
 
-#DNS Lookup for entered computer
+# Resolve the entered host to an IP address.
+$dnsLookup = [Net.DNS]::GetHostEntry($computerName)
+$address = $dnsLookup.AddressList[0].IPAddressToString
 
-$DNSLookup = [Net.DNS]::GetHostEntry($computerName)
-
-#hostname of computer
-
-$address = $DNSLookup.AddressList[0].IPAddressToString
-
-$check_command = 'check_ping\!3000,80%\!5000,100%'
-
-$max_check_attempts = '2'
-
-$contacts = 'nagiosadmin'
-
-$notification_interval = '5'
-
-$notification_period= '24x7'
-
-$applyconfig= '1'
-
-$check_period= '24x7'
-
-$Uri = 'https://<nagioshost>/nagiosxi/api/v1/config/host?apikey=l9dtails9n08nns4daf7rndrjup8paicgv9pfrlljjqa9mbjuppne6g2499qgr60&pretty=1'
-
-$postParams = @{
-
-                host_name=$computerName
-
-                address=$address
-
-                check_command = 'check_ping\!3000,80%\!5000,100%'
-
-                max_check_attempts = $max_check_attempts
-
-                contacts = $contacts
-
-                notification_interval = $notification_interval
-
-                notification_period = $notification_period
-
-                applyconfig = $applyconfig
-
-                check_period = $check_period
-
+# Keep credentials and environment-specific endpoints out of source control.
+# Example:
+#   $env:NAGIOS_XI_BASE_URL = 'https://nagios.example.com'
+#   $env:NAGIOS_XI_API_KEY  = '<retrieve-from-secure-secret-store>'
+if ([string]::IsNullOrWhiteSpace($env:NAGIOS_XI_BASE_URL)) {
+    throw 'NAGIOS_XI_BASE_URL is not set.'
 }
 
+if ([string]::IsNullOrWhiteSpace($env:NAGIOS_XI_API_KEY)) {
+    throw 'NAGIOS_XI_API_KEY is not set.'
+}
 
+$baseUrl = $env:NAGIOS_XI_BASE_URL.TrimEnd('/')
+$apiKey = [Uri]::EscapeDataString($env:NAGIOS_XI_API_KEY)
+$uri = "$baseUrl/nagiosxi/api/v1/config/host?apikey=$apiKey&pretty=1"
 
-#Write-host $postParams.ToString()
-$response = (Invoke-WebRequest -Uri $Uri  -Method 'POST' -Body $postParams).ToString()
-Write-Host $response
+$postParams = @{
+    host_name             = $computerName
+    address               = $address
+    check_command         = 'check_ping\!3000,80%\!5000,100%'
+    max_check_attempts    = '2'
+    contacts              = 'nagiosadmin'
+    notification_interval = '5'
+    notification_period   = '24x7'
+    applyconfig           = '1'
+    check_period          = '24x7'
+}
+
+$response = Invoke-RestMethod -Uri $uri -Method Post -Body $postParams
+$response
