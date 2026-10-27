@@ -1,32 +1,36 @@
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+param()
+
 $ErrorActionPreference = 'Stop'
 
-$computerName = Read-Host "Enter Hostname"
-
-# Resolve the entered host to an IP address.
-$dnsLookup = [Net.DNS]::GetHostEntry($computerName)
-$address = $dnsLookup.AddressList[0].IPAddressToString
-
-# Keep credentials and environment-specific endpoints out of source control.
-# Example:
-#   $env:NAGIOS_XI_BASE_URL = 'https://nagios.example.com'
-#   $env:NAGIOS_XI_API_KEY  = '<retrieve-from-secure-secret-store>'
+# Supply these variables in this process from an approved secret store.
 if ([string]::IsNullOrWhiteSpace($env:NAGIOS_XI_BASE_URL)) {
     throw 'NAGIOS_XI_BASE_URL is not set.'
 }
-
 if ([string]::IsNullOrWhiteSpace($env:NAGIOS_XI_API_KEY)) {
     throw 'NAGIOS_XI_API_KEY is not set.'
 }
 
-$baseUrl = $env:NAGIOS_XI_BASE_URL.TrimEnd('/')
-$apiKey = [Uri]::EscapeDataString($env:NAGIOS_XI_API_KEY)
-$uri = "$baseUrl/nagiosxi/api/v1/config/host?apikey=$apiKey&pretty=1"
+$baseUri = $null
+if (-not [Uri]::TryCreate($env:NAGIOS_XI_BASE_URL, [UriKind]::Absolute, [ref]$baseUri) -or
+    $baseUri.Scheme -ne 'https' -or [string]::IsNullOrWhiteSpace($baseUri.Host) -or
+    $baseUri.UserInfo -or $baseUri.Query -or $baseUri.Fragment -or
+    $baseUri.AbsolutePath -ne '/') {
+    throw 'NAGIOS_XI_BASE_URL must be an HTTPS origin, optionally with a port, without a path, credentials, query, or fragment.'
+}
+
+$computerName = Read-Host 'Enter Hostname'
+if ([string]::IsNullOrWhiteSpace($computerName) -or [Uri]::CheckHostName($computerName) -ne [UriHostNameType]::Dns) {
+    throw 'Enter a valid DNS hostname.'
+}
+$dnsLookup = [Net.DNS]::GetHostEntry($computerName)
+$address = $dnsLookup.AddressList[0].IPAddressToString
 
 $postParams = @{
     host_name             = $computerName
     address               = $address
     check_command         = 'check_ping\!3000,80%\!5000,100%'
-    max_check_attempts    = '2'
+    max_check_attempts     = '2'
     contacts              = 'nagiosadmin'
     notification_interval = '5'
     notification_period   = '24x7'
@@ -34,5 +38,22 @@ $postParams = @{
     check_period          = '24x7'
 }
 
-$response = Invoke-RestMethod -Uri $uri -Method Post -Body $postParams
-$response
+if ($PSCmdlet.ShouldProcess($computerName, 'Create Nagios XI host and apply configuration')) {
+    $apiKey = $null
+    $uri = $null
+    try {
+        $apiKey = [Uri]::EscapeDataString($env:NAGIOS_XI_API_KEY)
+        $uri = "$($baseUri.AbsoluteUri.TrimEnd('/'))/nagiosxi/api/v1/config/host?apikey=$apiKey&pretty=1"
+        # Refuse redirects so a key is not forwarded to another endpoint.
+        $null = Invoke-RestMethod -Uri $uri -Method Post -Body $postParams -MaximumRedirection 0 -TimeoutSec 30 -Verbose:$false -Debug:$false
+        Write-Output 'Request completed. Verify the host and configuration status in Nagios XI.'
+    }
+    catch {
+        # Do not emit the original exception or response: it may contain the key-bearing URI.
+        throw 'Nagios XI request failed. Check server-side status and logs securely before retrying; the request may already have been applied.'
+    }
+    finally {
+        $apiKey = $null
+        $uri = $null
+    }
+}
